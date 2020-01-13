@@ -1,5 +1,7 @@
+import cProfile
 import numpy as np
 import pandas as pd
+import pstats
 from sklearn.model_selection import train_test_split
 
 from causalml.inference.tree import UpliftTreeClassifier
@@ -20,7 +22,7 @@ def test_UpliftRandomForestClassifier(generate_classification_data):
                                          test_size=0.2,
                                          random_state=RANDOM_SEED)
 
-    # Train the UpLift Random Forest classifer
+    # Train the UpLift Random Forest classifier
     uplift_model = UpliftRandomForestClassifier(
         min_samples_leaf=50,
         control_name=TREATMENT_NAMES[0]
@@ -59,8 +61,7 @@ def test_UpliftRandomForestClassifier(generate_classification_data):
 
     cumgain = get_cumgain(auuc_metrics,
                           outcome_col=CONVERSION,
-                          treatment_col='is_treated',
-                          steps=20)
+                          treatment_col='is_treated')
 
     # Check if the cumulative gain of UpLift Random Forest is higher than
     # random
@@ -73,15 +74,22 @@ def test_UpliftTreeClassifier(generate_classification_data):
                                          test_size=0.2,
                                          random_state=RANDOM_SEED)
 
-    # Train the UpLift Random Forest classifer
+    # Train the UpLift Random Forest classifier
     uplift_model = UpliftTreeClassifier(control_name=TREATMENT_NAMES[0])
 
+    pr = cProfile.Profile(subcalls=True, builtins=True, timeunit=.001)
+    pr.enable()
     uplift_model.fit(df_train[x_names].values,
                      treatment=df_train['treatment_group_key'].values,
                      y=df_train[CONVERSION].values)
 
     _, _, _, y_pred = uplift_model.predict(df_test[x_names].values,
                                            full_output=True)
+    pr.disable()
+    with open('UpliftTreeClassifier.prof', 'w') as f:
+        ps = pstats.Stats(pr, stream=f).sort_stats('cumulative')
+        ps.print_stats()
+
     result = pd.DataFrame(y_pred)
     result.drop(CONTROL_NAME, axis=1, inplace=True)
 
@@ -111,8 +119,7 @@ def test_UpliftTreeClassifier(generate_classification_data):
 
     cumgain = get_cumgain(auuc_metrics,
                           outcome_col=CONVERSION,
-                          treatment_col='is_treated',
-                          steps=20)
+                          treatment_col='is_treated')
 
     # Check if the cumulative gain of UpLift Random Forest is higher than
     # random

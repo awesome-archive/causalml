@@ -2,14 +2,22 @@
 # cython: boundscheck=False
 # cython: wraparound=False
 
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.tree._criterion cimport RegressionCriterion
-from sklearn.tree._criterion cimport SIZE_t, DOUBLE_t
+
 import logging
+import numbers
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
 
+from math import ceil
+from scipy.sparse import issparse
+from scipy.stats import norm
+from sklearn.tree._criterion cimport RegressionCriterion
+from sklearn.tree._criterion cimport SIZE_t, DOUBLE_t
+from sklearn.tree._splitter import BestSplitter
+from sklearn.tree._tree import DepthFirstTreeBuilder, DOUBLE, DTYPE, Tree
+from sklearn.utils import check_array, check_random_state
+
+from causalml.inference.meta.utils import check_treatment_vector
 
 logger = logging.getLogger('causalml')
 
@@ -33,13 +41,14 @@ cdef class CausalMSE(RegressionCriterion):
         cdef SIZE_t i
         cdef SIZE_t p
         cdef DOUBLE_t is_treated
-        cdef DOUBLE_t* y = self.y
         cdef DOUBLE_t y_ik
 
         cdef SIZE_t* samples = self.samples
         cdef DOUBLE_t* sample_weight = self.sample_weight
 
+        cdef double node_ct = 0.0
         cdef double node_tr = 0.0
+        cdef double node_ct_sum = 0.0
         cdef double node_tr_sum = 0.0
         cdef double one_over_eps = 1e5
 
@@ -51,13 +60,15 @@ cdef class CausalMSE(RegressionCriterion):
                 is_treated = (sample_weight[i] - 1.0) * one_over_eps
 
             # assume that there is only one output (k = 0)
-            y_ik = y[i * self.y_stride]
+            y_ik = self.y[i, 0]
 
             node_tr += is_treated
+            node_ct += 1. - is_treated
             node_tr_sum += y_ik * is_treated
+            node_ct_sum += y_ik * (1. - is_treated)
 
         # save the average of treatment effects within a node as a value for the node
-        dest[0] = (node_tr_sum / node_tr) - (self.sum_total[0] - node_tr_sum) / (self.weighted_n_node_samples - node_tr)
+        dest[0] = node_tr_sum / node_tr - node_ct_sum / node_ct
 
     cdef double node_impurity(self) nogil:
         """Evaluate the impurity of the current node, i.e. the impurity of
@@ -71,20 +82,19 @@ cdef class CausalMSE(RegressionCriterion):
         cdef SIZE_t i
         cdef SIZE_t p
         cdef DOUBLE_t is_treated
-        cdef DOUBLE_t* y = self.y
         cdef DOUBLE_t y_ik
 
         cdef SIZE_t* samples = self.samples
         cdef DOUBLE_t* sample_weight = self.sample_weight
 
         cdef double node_tr = 0.0
-        cdef double node_con = 0.0
+        cdef double node_ct = 0.0
         cdef double node_sum = self.sum_total[0]
         cdef double node_tr_sum = 0.0
         cdef double node_sq_sum = 0.0
         cdef double node_tr_sq_sum = 0.0
         cdef double tr_var
-        cdef double con_var
+        cdef double ct_var
         cdef double one_over_eps = 1e5
 
         for p in range(start, end):
@@ -95,24 +105,23 @@ cdef class CausalMSE(RegressionCriterion):
                 is_treated = (sample_weight[i] - 1.0) * one_over_eps
 
             # assume that there is only one output (k = 0)
-            y_ik = y[i * self.y_stride]
+            y_ik = self.y[i, 0]
 
             node_tr += is_treated
+            node_ct += (1. - is_treated)
             node_tr_sum += y_ik * is_treated
             node_sq_sum += y_ik * y_ik
             node_tr_sq_sum += y_ik * y_ik * is_treated
 
-        node_con = self.weighted_n_node_samples - node_tr
-        node_tau = node_tr_sum / node_tr - (node_sum - node_tr_sum) / node_con
+        node_tau = node_tr_sum / node_tr - (node_sum - node_tr_sum) / node_ct
         tr_var = node_tr_sq_sum / node_tr - node_tr_sum * node_tr_sum / (node_tr * node_tr)
-        con_var = ((node_sq_sum - node_tr_sq_sum) / node_con -
-                   (node_sum - node_tr_sum) * (node_sum - node_tr_sum) / (node_con * node_con))
+        ct_var = ((node_sq_sum - node_tr_sq_sum) / node_ct -
+                  (node_sum - node_tr_sum) * (node_sum - node_tr_sum) / (node_ct * node_ct))
 
-        return node_tau * node_tau - (tr_var / node_tr + con_var / node_con)
+        return  (tr_var / node_tr + ct_var / node_ct) - node_tau * node_tau
 
 
-    cdef void children_impurity(self, double* impurity_left,
-                                double* impurity_right) nogil:
+    cdef void children_impurity(self, double* impurity_left, double* impurity_right) nogil:
         """Evaluate the impurity in children nodes, i.e. the impurity of the
            left child (samples[start:pos]) and the impurity the right child
            (samples[pos:end])."""
@@ -129,26 +138,25 @@ cdef class CausalMSE(RegressionCriterion):
         cdef SIZE_t i
         cdef SIZE_t p
         cdef DOUBLE_t is_treated
-        cdef DOUBLE_t* y = self.y
         cdef DOUBLE_t y_ik
 
         cdef double right_tr = 0.0
-        cdef double right_con = 0.0
+        cdef double right_ct = 0.0
         cdef double right_sum = 0.0
         cdef double right_tr_sum = 0.0
         cdef double right_sq_sum = 0.0
         cdef double right_tr_sq_sum = 0.0
         cdef double right_tr_var
-        cdef double right_con_var
+        cdef double right_ct_var
 
         cdef double left_tr = 0.0
-        cdef double left_con = 0.0
+        cdef double left_ct = 0.0
         cdef double left_sum = 0.0
         cdef double left_tr_sum = 0.0
         cdef double left_sq_sum = 0.0
         cdef double left_tr_sq_sum = 0.0
         cdef double left_tr_var
-        cdef double left_con_var
+        cdef double left_ct_var
 
         cdef double one_over_eps = 1e5
 
@@ -160,41 +168,41 @@ cdef class CausalMSE(RegressionCriterion):
                 is_treated = (sample_weight[i] - 1.0) * one_over_eps
 
             # assume that there is only one output (k = 0)
-            y_ik = y[i * self.y_stride]
+            y_ik = self.y[i, 0]
 
             if p < pos:
                 left_tr += is_treated
+                left_ct += 1. - is_treated
                 left_sum += y_ik
                 left_tr_sum += y_ik * is_treated
                 left_sq_sum += y_ik * y_ik
                 left_tr_sq_sum += y_ik * y_ik * is_treated
             else:
                 right_tr += is_treated
+                right_ct += 1. - is_treated
                 right_sum += y_ik
                 right_tr_sum += y_ik * is_treated
                 right_sq_sum += y_ik * y_ik
                 right_tr_sq_sum += y_ik * y_ik * is_treated
 
-        right_con = self.weighted_n_right - right_tr
-        right_tau = right_tr_sum / right_tr - (sum_right[0] - right_tr_sum) / right_con
+        right_tau = right_tr_sum / right_tr - (sum_right[0] - right_tr_sum) / right_ct
         right_tr_var = right_tr_sq_sum / right_tr - right_tr_sum * right_tr_sum / (right_tr * right_tr)
-        right_con_var = ((right_sq_sum - right_tr_sq_sum) / right_con -
-                         (right_sum - right_tr_sum) * (right_sum - right_tr_sum) / (right_con * right_con))
+        right_ct_var = ((right_sq_sum - right_tr_sq_sum) / right_ct -
+                         (right_sum - right_tr_sum) * (right_sum - right_tr_sum) / (right_ct * right_ct))
 
-        left_con = self.weighted_n_left - left_tr
-        left_tau = left_tr_sum / left_tr - (sum_left[0] - left_tr_sum) / left_con
+        left_tau = left_tr_sum / left_tr - (sum_left[0] - left_tr_sum) / left_ct
         left_tr_var = left_tr_sq_sum / left_tr - left_tr_sum * left_tr_sum / (left_tr * left_tr)
-        left_con_var = ((left_sq_sum - left_tr_sq_sum) / left_con -
-                        (left_sum - left_tr_sum) * (left_sum - left_tr_sum) / (left_con * left_con))
+        left_ct_var = ((left_sq_sum - left_tr_sq_sum) / left_ct -
+                        (left_sum - left_tr_sum) * (left_sum - left_tr_sum) / (left_ct * left_ct))
 
-        impurity_left[0] = left_tau * left_tau - (left_tr_var / left_tr + left_con_var / left_con)
-        impurity_right[0] = right_tau * right_tau - (right_tr_var / right_tr + right_con_var / right_con)
+        impurity_left[0] = (left_tr_var / left_tr + left_ct_var / left_ct) - left_tau * left_tau
+        impurity_right[0] = (right_tr_var / right_tr + right_ct_var / right_ct) - right_tau * right_tau
 
 
 class CausalTreeRegressor(object):
     """A Causal Tree regressor class.
 
-    The Causal Tree is a decision tree regressor with a split criteria for treamt effects instead of
+    The Causal Tree is a decision tree regressor with a split criteria for treatment effects instead of
     outputs.
 
     Details are available at Athey and Imbens (2015) (https://arxiv.org/abs/1504.01132)
@@ -205,7 +213,7 @@ class CausalTreeRegressor(object):
 
         Args:
             ate_alpha (float, optional): the confidence level alpha of the ATE estimate
-            control_name (str or int, optional): name of control gropu
+            control_name (str or int, optional): name of control group
             max_depth (int, optional): the maximum depth of tree
             min_samples_leaf (int, optional): the minimum number of samples in leaves
             random_state (int or np.RandomState, optional): a random seed or a random state
@@ -217,7 +225,7 @@ class CausalTreeRegressor(object):
         self.random_state = random_state
 
         self._classes = {}
-        self.model = None
+        self.tree = None
 
         self.eps = 1e-5
 
@@ -232,19 +240,74 @@ class CausalTreeRegressor(object):
         Returns:
             self (CausalTree object)
         """
+        check_treatment_vector(treatment, self.control_name)
         is_treatment = treatment != self.control_name
         w = is_treatment.astype(int)
 
         t_groups = np.unique(treatment[is_treatment])
         self._classes[t_groups[0]] = 0
 
-        self.model = DecisionTreeRegressor(criterion=CausalMSE(1, X.shape[0]),
-                                           max_depth=self.max_depth,
-                                           min_samples_leaf=self.min_samples_leaf,
-                                           random_state=self.random_state)
+        # input checking replicated from BaseDecisionTree.fit()
+        random_state = check_random_state(self.random_state)
+        X = check_array(X, dtype=DTYPE, accept_sparse="csc")
+        y = check_array(y, ensure_2d=False, dtype=None)
+        if issparse(X):
+            X.sort_indices()
 
-        # sample_weight is used to pass the treatment flag
-        self.model.fit(X, y, sample_weight=1 + self.eps * w)
+            if X.indices.dtype != np.intc or X.indptr.dtype != np.intc:
+                raise ValueError("No support for np.int64 index based "
+                                 "sparse matrices")
+
+        y = np.atleast_1d(y)
+        if y.ndim == 1:
+            y = np.reshape(y, (-1, 1))
+        if getattr(y, "dtype", None) != DOUBLE or not y.flags.contiguous:
+            y = np.ascontiguousarray(y, dtype=DOUBLE)
+        n_samples, n_features = X.shape
+        n_outputs = y.shape[1]
+
+        if isinstance(self.min_samples_leaf, numbers.Integral):
+            if not 1 <= self.min_samples_leaf:
+                raise ValueError("min_samples_leaf must be at least 1 "
+                                 "or in (0, 0.5], got %s"
+                                 % self.min_samples_leaf)
+            min_samples_leaf = self.min_samples_leaf
+        else:  # float
+            if not 0. < self.min_samples_leaf <= 0.5:
+                raise ValueError("min_samples_leaf must be at least 1 "
+                                 "or in (0, 0.5], got %s"
+                                 % self.min_samples_leaf)
+            min_samples_leaf = int(ceil(self.min_samples_leaf * n_samples))
+        max_depth = (np.iinfo(np.int32).max if self.max_depth is None
+                     else self.max_depth)
+
+        self.tree = Tree(
+            n_features = n_features,
+            # line below is taken from DecisionTreeRegressor.fit method source
+            #   which comments that the tree shouldn't need the n_classes parameter
+            #   but it apparently does
+            n_classes = np.array([1] * n_outputs, dtype=np.intp),
+            n_outputs = n_outputs)
+        splitter = BestSplitter(criterion = CausalMSE(1, X.shape[0]),
+            max_features = n_features,
+            min_samples_leaf = min_samples_leaf,
+            min_weight_leaf = 0, # from DecisionTreeRegressor default
+            random_state = random_state)
+        # hardcoded values below come from defaults values in
+        #   sklearn.tree._classes.DecisionTreeRegressor
+        builder = DepthFirstTreeBuilder(
+            splitter = splitter,
+            min_samples_split = 2,
+            min_samples_leaf = min_samples_leaf,
+            min_weight_leaf = 0,
+            max_depth = max_depth,
+            min_impurity_decrease = 0,
+            min_impurity_split = float("-inf"))
+        builder.build(
+            self.tree,
+            X = X,
+            y = y,
+            sample_weight = 1 + self.eps * w)
 
         return self
 
@@ -257,7 +320,8 @@ class CausalTreeRegressor(object):
         Returns:
             (numpy.ndarray): Predictions of treatment effects.
         """
-        return self.model.predict(X).reshape((-1, 1))
+        X = check_array(X, dtype=DTYPE, accept_sparse="csr")
+        return self.tree.predict(X).reshape((-1, 1))
 
     def fit_predict(self, X, treatment, y, return_ci=False, n_bootstraps=1000, bootstrap_size=10000, verbose=False):
         """Fit the Causal Tree model and predict treatment effects.

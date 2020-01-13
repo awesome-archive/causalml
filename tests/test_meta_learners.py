@@ -8,14 +8,14 @@ from xgboost import XGBRegressor
 from xgboost import XGBClassifier
 
 from causalml.dataset import synthetic_data
-from causalml.dataset import make_uplift_classification
 from causalml.inference.meta import BaseSLearner, BaseSRegressor, BaseSClassifier, LRSRegressor
 from causalml.inference.meta import BaseTLearner, BaseTRegressor, BaseTClassifier, XGBTRegressor, MLPTRegressor
 from causalml.inference.meta import BaseXLearner, BaseXClassifier, BaseXRegressor
 from causalml.inference.meta import BaseRLearner, BaseRClassifier, BaseRRegressor
+from causalml.inference.meta import TMLELearner
 from causalml.metrics import ape, gini, get_cumgain
 
-from .const import RANDOM_SEED, N_SAMPLE, ERROR_THRESHOLD, CONTROL_NAME, TREATMENT_NAMES, CONVERSION
+from .const import RANDOM_SEED, N_SAMPLE, ERROR_THRESHOLD, CONTROL_NAME, CONVERSION
 
 
 def test_synthetic_data():
@@ -50,7 +50,7 @@ def test_BaseSLearner(generate_regression_data):
     learner = BaseSLearner(learner=LinearRegression())
 
     # check the accuracy of the ATE estimation
-    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y)
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, return_ci=True)
     assert (ate_p >= lb) and (ate_p <= ub)
     assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
 
@@ -61,7 +61,7 @@ def test_BaseSRegressor(generate_regression_data):
     learner = BaseSRegressor(learner=XGBRegressor())
 
     # check the accuracy of the ATE estimation
-    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y)
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
     assert (ate_p >= lb) and (ate_p <= ub)
     assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
 
@@ -147,12 +147,12 @@ def test_BaseXLearner(generate_regression_data):
     learner = BaseXLearner(learner=XGBRegressor())
 
     # check the accuracy of the ATE estimation
-    ate_p, lb, ub = learner.estimate_ate(X=X, p=e, treatment=treatment, y=y)
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, p=e)
     assert (ate_p >= lb) and (ate_p <= ub)
     assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
 
     # check the accuracy of the CATE estimation with the bootstrap CI
-    cate_p, _, _ = learner.fit_predict(X=X, p=e, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
+    cate_p, _, _ = learner.fit_predict(X=X, treatment=treatment, y=y, p=e, return_ci=True, n_bootstraps=10)
     assert gini(tau, cate_p.flatten()) > .5
 
 
@@ -162,12 +162,42 @@ def test_BaseXRegressor(generate_regression_data):
     learner = BaseXRegressor(learner=XGBRegressor())
 
     # check the accuracy of the ATE estimation
-    ate_p, lb, ub = learner.estimate_ate(X=X, p=e, treatment=treatment, y=y)
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, p=e)
     assert (ate_p >= lb) and (ate_p <= ub)
     assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
 
     # check the accuracy of the CATE estimation with the bootstrap CI
-    cate_p, _, _ = learner.fit_predict(X=X, p=e, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
+    cate_p, _, _ = learner.fit_predict(X=X, treatment=treatment, y=y, p=e, return_ci=True, n_bootstraps=10)
+    assert gini(tau, cate_p.flatten()) > .5
+
+
+def test_BaseXLearner_without_p(generate_regression_data):
+    y, X, treatment, tau, b, e = generate_regression_data()
+
+    learner = BaseXLearner(learner=XGBRegressor())
+
+    # check the accuracy of the ATE estimation
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y)
+    assert (ate_p >= lb) and (ate_p <= ub)
+    assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
+
+    # check the accuracy of the CATE estimation with the bootstrap CI
+    cate_p, _, _ = learner.fit_predict(X=X, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
+    assert gini(tau, cate_p.flatten()) > .5
+
+
+def test_BaseXRegressor_without_p(generate_regression_data):
+    y, X, treatment, tau, b, e = generate_regression_data()
+
+    learner = BaseXRegressor(learner=XGBRegressor())
+
+    # check the accuracy of the ATE estimation
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y)
+    assert (ate_p >= lb) and (ate_p <= ub)
+    assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
+
+    # check the accuracy of the CATE estimation with the bootstrap CI
+    cate_p, _, _ = learner.fit_predict(X=X, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
     assert gini(tau, cate_p.flatten()) > .5
 
 
@@ -177,12 +207,12 @@ def test_BaseRLearner(generate_regression_data):
     learner = BaseRLearner(learner=XGBRegressor())
 
     # check the accuracy of the ATE estimation
-    ate_p, lb, ub = learner.estimate_ate(X=X, p=e, treatment=treatment, y=y)
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, p=e)
     assert (ate_p >= lb) and (ate_p <= ub)
     assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
 
     # check the accuracy of the CATE estimation with the bootstrap CI
-    cate_p, _, _ = learner.fit_predict(X=X, p=e, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
+    cate_p, _, _ = learner.fit_predict(X=X, treatment=treatment, y=y, p=e, return_ci=True, n_bootstraps=10)
     assert gini(tau, cate_p.flatten()) > .5
 
 
@@ -192,13 +222,54 @@ def test_BaseRRegressor(generate_regression_data):
     learner = BaseRRegressor(learner=XGBRegressor())
 
     # check the accuracy of the ATE estimation
-    ate_p, lb, ub = learner.estimate_ate(X=X, p=e, treatment=treatment, y=y)
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, p=e)
     assert (ate_p >= lb) and (ate_p <= ub)
     assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
 
     # check the accuracy of the CATE estimation with the bootstrap CI
-    cate_p, _, _ = learner.fit_predict(X=X, p=e, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
+    cate_p, _, _ = learner.fit_predict(X=X, treatment=treatment, y=y, p=e, return_ci=True, n_bootstraps=10)
     assert gini(tau, cate_p.flatten()) > .5
+
+
+def test_BaseRLearner_without_p(generate_regression_data):
+    y, X, treatment, tau, b, e = generate_regression_data()
+
+    learner = BaseRLearner(learner=XGBRegressor())
+
+    # check the accuracy of the ATE estimation
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y)
+    assert (ate_p >= lb) and (ate_p <= ub)
+    assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
+
+    # check the accuracy of the CATE estimation with the bootstrap CI
+    cate_p, _, _ = learner.fit_predict(X=X, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
+    assert gini(tau, cate_p.flatten()) > .5
+
+
+def test_BaseRRegressor_without_p(generate_regression_data):
+    y, X, treatment, tau, b, e = generate_regression_data()
+
+    learner = BaseRRegressor(learner=XGBRegressor())
+
+    # check the accuracy of the ATE estimation
+    ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y)
+    assert (ate_p >= lb) and (ate_p <= ub)
+    assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
+
+    # check the accuracy of the CATE estimation with the bootstrap CI
+    cate_p, _, _ = learner.fit_predict(X=X, treatment=treatment, y=y, return_ci=True, n_bootstraps=10)
+    assert gini(tau, cate_p.flatten()) > .5
+
+
+def test_TMLELearner(generate_regression_data):
+    y, X, treatment, tau, b, e = generate_regression_data()
+
+    learner = TMLELearner(learner=XGBRegressor())
+
+    # check the accuracy of the ATE estimation
+    ate_p, lb, ub = learner.estimate_ate(X=X, p=e, treatment=treatment, y=y)
+    assert (ate_p >= lb) and (ate_p <= ub)
+    assert ape(tau.mean(), ate_p) < ERROR_THRESHOLD
 
 
 def test_BaseSClassifier(generate_classification_data):
@@ -228,8 +299,7 @@ def test_BaseSClassifier(generate_classification_data):
 
     cumgain = get_cumgain(auuc_metrics,
                           outcome_col=CONVERSION,
-                          treatment_col='W',
-                          steps=20)
+                          treatment_col='W')
 
     # Check if the cumulative gain when using the model's prediction is
     # higher than it would be under random targeting
@@ -263,8 +333,7 @@ def test_BaseTClassifier(generate_classification_data):
 
     cumgain = get_cumgain(auuc_metrics,
                           outcome_col=CONVERSION,
-                          treatment_col='W',
-                          steps=20)
+                          treatment_col='W')
 
     # Check if the cumulative gain when using the model's prediction is
     # higher than it would be under random targeting
@@ -287,9 +356,10 @@ def test_BaseXClassifier(generate_classification_data):
                                          test_size=0.2,
                                          random_state=RANDOM_SEED)
 
-    uplift_model = BaseXClassifier(learner=XGBRegressor(),
-                                   control_outcome_learner=XGBClassifier(),
-                                   treatment_outcome_learner=XGBClassifier())
+    uplift_model = BaseXClassifier(control_outcome_learner=XGBClassifier(),
+                                   control_effect_learner=XGBRegressor(),
+                                   treatment_outcome_learner=XGBClassifier(),
+                                   treatment_effect_learner=XGBRegressor())
 
     uplift_model.fit(X=df_train[x_names].values,
                      treatment=df_train['treatment_group_key'].values,
@@ -304,8 +374,7 @@ def test_BaseXClassifier(generate_classification_data):
 
     cumgain = get_cumgain(auuc_metrics,
                           outcome_col=CONVERSION,
-                          treatment_col='W',
-                          steps=20)
+                          treatment_col='W')
 
     # Check if the cumulative gain when using the model's prediction is
     # higher than it would be under random targeting
@@ -328,8 +397,8 @@ def test_BaseRClassifier(generate_classification_data):
                                          test_size=0.2,
                                          random_state=RANDOM_SEED)
 
-    uplift_model = BaseRClassifier(learner=XGBRegressor(),
-                                   outcome_learner=XGBClassifier())
+    uplift_model = BaseRClassifier(outcome_learner=XGBClassifier(),
+                                   effect_learner=XGBRegressor())
 
     uplift_model.fit(X=df_train[x_names].values,
                      p=df_train['propensity_score'].values,
@@ -344,9 +413,42 @@ def test_BaseRClassifier(generate_classification_data):
 
     cumgain = get_cumgain(auuc_metrics,
                           outcome_col=CONVERSION,
-                          treatment_col='W',
-                          steps=20)
+                          treatment_col='W')
 
     # Check if the cumulative gain when using the model's prediction is
     # higher than it would be under random targeting
     assert cumgain['y_pred'].sum() > cumgain['Random'].sum()
+
+
+def test_pandas_input(generate_regression_data):
+    y, X, treatment, tau, b, e = generate_regression_data()
+    # convert to pandas types
+    y = pd.Series(y)
+    X = pd.DataFrame(X)
+    treatment = pd.Series(treatment)
+
+    try:
+        learner = BaseSLearner(learner=LinearRegression())
+        ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, return_ci=True)
+    except AttributeError:
+        assert False
+    try:
+        learner = BaseTLearner(learner=LinearRegression())
+        ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y)
+    except AttributeError:
+        assert False
+    try:
+        learner = BaseXLearner(learner=LinearRegression())
+        ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, p=e)
+    except AttributeError:
+        assert False
+    try:
+        learner = BaseRLearner(learner=LinearRegression())
+        ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, p=e)
+    except AttributeError:
+        assert False
+    try:
+        learner = TMLELearner(learner=LinearRegression())
+        ate_p, lb, ub = learner.estimate_ate(X=X, treatment=treatment, y=y, p=e)
+    except AttributeError:
+        assert False

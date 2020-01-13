@@ -2,13 +2,6 @@
 Methodology
 ===========
 
-Tree-Based Algorithms
----------------------
-
-Uplift Random Forests
-~~~~~~~~~~~~~~~~~~~~~
-
-
 Meta-Learner Algorithms
 -----------------------
 
@@ -76,7 +69,7 @@ X-learner :cite:`kunzel2019metalearners` is an extension of T-learner, and consi
 | Impute the user level treatment effects, :math:`D^1_i` and :math:`D^0_j` for user :math:`i` in the treatment group based on :math:`\mu_0(x)`, and user :math:`j` in the control groups based on :math:`\mu_1(x)`:
 |
 |   :math:`D^1_i = Y^1_i - \hat\mu_0(X^1_i)`, and
-|   :math:`D^0_i = Y^0_i - \hat\mu_1(X^0_i)`
+|   :math:`D^0_i = \hat\mu_1(X^0_i)` - Y^0_i
 |
 | then estimate :math:`\tau_1(x) = E[D^1|X=x]`, and :math:`\tau_0(x) = E[D^0|X=x]` using machine learning models.
 |
@@ -102,6 +95,10 @@ R-learner :cite:`nie2017quasi` uses the cross-validation out-of-fold estimates o
 |   :math:`\hat{L}_n(\tau(x)) = \frac{1}{n} \sum^n_{i=1}\big(\big(Y_i - \hat{m}^{(-i)}(X_i)\big) - \big(W_i - \hat{e}^{(-i)}(X_i)\big)\tau(X_i)\big)^2`
 |
 | where :math:`e^{(-i)}(X_i)`, etc. denote the out-of-fold held-out predictions made without using the :math:`i`-th training sample.
+
+
+Tree-Based Algorithms
+---------------------
 
 Uplift Tree
 ~~~~~~~~~~~
